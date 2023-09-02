@@ -1,10 +1,12 @@
 package queux
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/gokutils/container/list"
+	lsync "github.com/gokutils/container/sync"
 )
 
 var (
@@ -12,59 +14,58 @@ var (
 )
 
 type QueuxMemory[T any] struct {
-	locker sync.Mutex
-	list   *list.List
-	read   chan struct{}
+	locker *sync.Mutex
+	list   *list.List[T]
+	cond   *lsync.Cond
 }
 
 func NewQueuxMemory[T any]() *QueuxMemory[T] {
+	locker := &sync.Mutex{}
 	return &QueuxMemory[T]{
-		list: list.New(),
-		read: make(chan struct{}),
+		locker: locker,
+		list:   list.New[T](),
+		cond:   lsync.NewCond(locker),
 	}
 }
 
 func (impl *QueuxMemory[T]) Push(v T) error {
 	impl.locker.Lock()
-	defer impl.locker.Unlock()
 	impl.list.PushBack(v)
-	select {
-	case impl.read <- struct{}{}:
-		return nil
-	default:
-		return nil
-	}
+	impl.locker.Unlock()
+	impl.cond.Signal()
+	return nil
 }
 
-func (impl *QueuxMemory[T]) Get() (T, bool) {
-	impl.locker.Lock()
-	defer impl.locker.Unlock()
+func (impl *QueuxMemory[T]) get() (T, bool) {
 	if impl.list.Len() > 0 {
-		el := impl.list.Front()
-		impl.list.Remove(el)
-		return el.Value.(T), true
+		el := impl.list.PopFront()
+		return el, true
 	}
 	var noop T
 	return noop, false
 }
 
+func (impl *QueuxMemory[T]) Get() (T, bool) {
+	impl.locker.Lock()
+	defer impl.locker.Unlock()
+	return impl.get()
+}
+
 func (impl *QueuxMemory[T]) GetOrWait(ctx context.Context) (T, error) {
 	var noop T
-	if v, ok := impl.Get(); ok {
+	impl.locker.Lock()
+	defer impl.locker.Unlock()
+	if v, ok := impl.get(); ok {
 		return v, nil
 	}
+
 	for {
-		select {
-		case _, ok := <-impl.read:
-			if !ok {
-				return noop, QueuxClosed
-			}
-			if v, ok := impl.Get(); ok {
-				return v, nil
-			}
-			continue
-		case <-ctx.Done():
-			return noop, ctx.Err()
+		err := impl.cond.Wait(ctx)
+		if err != nil {
+			return noop, err
+		}
+		if v, ok := impl.get(); ok {
+			return v, nil
 		}
 	}
 }
