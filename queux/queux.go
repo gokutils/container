@@ -2,15 +2,10 @@ package queux
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/gokutils/container/list"
 	lsync "github.com/gokutils/container/sync"
-)
-
-var (
-	QueuxClosed = errors.New("queux.closed")
 )
 
 type QueuxMemory[T any] struct {
